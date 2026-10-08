@@ -8,7 +8,7 @@
 
 1. 完全退出游戏。
 2. 确保电脑已安装 **.NET 9 Runtime（Windows x64）**。
-3. 双击 `安装.cmd`。默认游戏目录为 `D:\steam\steamapps\common\Gamble With Your Friends`。
+3. 双击 `安装.cmd`。默认游戏目录为 `C:\steam\steamapps\common\Gamble With Your Friends`。
 4. 自己创建房间，进入赌场，走近并看向机器。
 
 如果游戏在其他目录，在工具包目录的终端中运行：

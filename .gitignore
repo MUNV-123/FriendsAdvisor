@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+build/
+*.user
+*.suo
+*.log
+.friends-advisor/
+Assembly-CSharp.dll
+original.bak

@@ -79,6 +79,7 @@ public class RouletteWheel : Wheel { public UnityEngine.Transform ballWheel,ball
 public class WheelResult : UnityEngine.Component { public string result; }
 public class Roulette : GameBase { public Wheel wheel; }
 public class WheelOfFortune : GameBase { public Wheel wheel; }
+public class MoneyWheel : GameBase { public Wheel wheel; public string _currentBettingOption="Green"; }
 namespace FriendsAdvisor
 {
     internal static class Read
@@ -116,10 +117,18 @@ public static class Harness
         for(int i=0;i<37;i++) { double angle=i*2*Math.PI/37; wheel._results[i]=new WheelResult { result=i.ToString(),transform=Child(wheel.wheelTransform,(float)Math.Sin(angle)*.9f,(float)Math.Cos(angle)*.9f) }; }
         return game;
     }
+    private static MoneyWheel MoneyGame()
+    {
+        var game=new MoneyWheel(); var wheel=new Wheel { transform=Child(game.transform) }; game.wheel=wheel;
+        wheel.wheelTransform=Child(wheel.transform); wheel.resultsParent=wheel.wheelTransform; wheel.resultSelector=Child(game.transform,0,1);
+        var values=new[] {"Green","Blue","Red","Orange"}; wheel._results=new WheelResult[4];
+        for(int i=0;i<4;i++) { double angle=i*Math.PI/2; wheel._results[i]=new WheelResult { result=values[i],transform=Child(wheel.wheelTransform,(float)Math.Sin(angle),(float)Math.Cos(angle)) }; }
+        return game;
+    }
     private static string Describe(GameBase game,Random rng) { string text; Check(RaceWheelPredictions.TryDescribe(game,rng,out text),"machine handled"); return text; }
     public static void Main()
     {
-        try { Run(); Console.WriteLine("PASS: "+count+" assertions; independent RNG draws, both directions, virtual hierarchy transforms, ties, capture phases, round staleness, payout and locked-bet wording."); }
+        try { Run(); Console.WriteLine("PASS: "+count+" assertions; independent RNG draws, both directions, virtual hierarchy transforms, ties, capture phases, round staleness, Roulette/Fortune regression, MoneyWheel colors, selected bets, payout and locked-bet wording."); }
         catch(Exception error) { Console.Error.WriteLine("FAIL: "+error); Environment.Exit(1); }
     }
     private static void Run()
@@ -164,6 +173,49 @@ public static class Harness
         roulette.gameTurn--; rw.isServer=false;
         RaceWheelPredictions.ObserveWheelSpin(rw,1080); RaceWheelPredictions.ObserveRouletteBallSpin(rw,1080);
         Check(Describe(roulette,new SequenceRandom(0)).Contains("35（黑色）"),"client capture cannot overwrite host record");
+
+        var money=MoneyGame(); original=money.wheel.wheelTransform.localRotation.value;
+        var colors=new[] {"绿色","橙色","红色","蓝色"};
+        var options=new[] {"Green","Orange","Red","Blue"};
+        var factors=new[] {"1.8x","9x","4.5x","2.7x"};
+        for(int i=0;i<4;i++)
+        {
+            rng=new SequenceRandom(i*.25); money._currentBettingOption=options[i];
+            string text=Describe(money,rng);
+            Check(text.Contains("应押颜色："+colors[i]),"money wheel target color "+options[i]);
+            Check(text.Contains("基础返还 "+factors[i]),"money wheel uses fixed color multiplier and machine factor "+options[i]);
+            Check(text.Contains("当前选择："+colors[i]+" → 中奖（"),"matching selection wins "+options[i]);
+            Check(rng.DoubleCalls==1&&rng.IntCalls==0,"money wheel consumes exactly one detached double");
+        }
+        money._currentBettingOption="Green";
+        Check(Describe(money,new SequenceRandom(.5)).Contains("当前选择：绿色 → 未中奖（基础返还 0x）"),"different current selection loses");
+        Check(money._currentBettingOption=="Green"&&money.wheel.wheelTransform.localRotation.value==original&&!money.isPlaying,"money wheel preview never changes selected bet, transform or game");
+        Check(Describe(money,new SequenceRandom(.125)).Contains("分界"),"money wheel exact section boundary refuses advice");
+        money.wheel.spinDirection=true;
+        Check(Describe(money,new SequenceRandom(.25)).Contains("应押颜色：蓝色"),"money wheel reverse direction");
+        money.wheel.spinDirection=false; money.wheel._isSpinning=true;
+        rng=new SequenceRandom(.5);
+        Check(Describe(money,rng).Contains("尚未停稳")&&rng.DoubleCalls==0,"money wheel waits without RNG while not playing but spinning");
+        money.wheel._isSpinning=false;
+        money.transform.localPosition=new UnityEngine.Vector3(-2,5,7); money.transform.localRotation=UnityEngine.Quaternion.Euler(0,0,-13); money.transform.localScale=new UnityEngine.Vector3(.7f,1.6f,2);
+        money.wheel.wheelTransform.localRotation=UnityEngine.Quaternion.Euler(0,0,72);
+        Check(Describe(money,new SequenceRandom(.5)).Contains("应押颜色：红色"),"money wheel absolute target with scaled and moved root");
+        money.isPlaying=true;
+        Check(Describe(money,new SequenceRandom(0)).Contains("未取得"),"money wheel cannot guess an unobserved active spin");
+        RaceWheelPredictions.ObserveWheelSpin(money.wheel,1260);
+        rng=new SequenceRandom(.25); string moneyActive=Describe(money,rng);
+        Check(moneyActive.Contains("中奖颜色：红色")&&!moneyActive.Contains("应押"),"money wheel observed active spin uses locked-bet wording");
+        Check(moneyActive.Contains("当前选择：绿色 → 未中奖（基础返还 0x）")&&rng.DoubleCalls==0,"money wheel active cache computes selected loss without another random draw");
+        money.wheel.wheelTransform.localRotation=UnityEngine.Quaternion.Euler(0,0,211);
+        Check(Describe(money,new SequenceRandom(0)).Contains("中奖颜色：红色"),"money wheel active cached result stable through animation");
+        money.wheel.isServer=false; RaceWheelPredictions.ObserveWheelSpin(money.wheel,1080);
+        Check(Describe(money,new SequenceRandom(0)).Contains("中奖颜色：红色"),"money wheel client observation cannot overwrite host cache");
+        money.wheel.isServer=true; money.gameTurn++;
+        Check(Describe(money,new SequenceRandom(0)).Contains("未取得"),"money wheel cannot reuse result in later round");
+        money.isPlaying=false; money.wheel._results[2].result="Purple";
+        Check(Describe(money,new SequenceRandom(.5)).Contains("无法识别下注颜色"),"money wheel unknown result refuses payout advice");
+        money.wheel._results[2].result="Red"; money.wheel.resultSelector.parent=new UnityEngine.Transform();
+        Check(Describe(money,new SequenceRandom(.5)).Contains("机器外部"),"money wheel external selector refuses stable prediction");
 
     }
 }

@@ -22,6 +22,7 @@ internal static class Program
     private sealed record OldPackage(string Directory, string InstallerHash, string AdvisorHash);
     private static readonly OldPackage Legacy = new("legacy", "2EC8EE31E9D99B4F406A97062E667A48C59CA4C25BC4DDA0C5F6C08B47F7C515", "F0B031ED62C29C7C9FBA1EED5A24B529210CB063EF497F277B175280B3BE1FE0");
     private static readonly OldPackage Previous = new("previous", "262BDB6FA769DC3FE4868569B02D13267ED9E368DFD835D718706342FD9B8A8D", "621BA40C63CAD5D292678C51A2CDF8B762322489A47B9D477F52354BFC25F84A");
+    private static readonly OldPackage Version12 = new("v12", "50965C5E4C7B96F7017E3EB7761C0F2DB842F90E193895F8DC3971862510A0E8", "4A8F38C9950ADD6E26B7E43F2A66FA8F234F7F5E89D81EF936EF21E51446A982");
     private static readonly ExtraHook[] ExtraHooks = {
         new("Wheel", "RpcSpinWheel", "ObserveWheelSpin", new[] { "System.Single", "System.Single" }),
         new("RouletteWheel", "RpcSpinBallWheel", "ObserveRouletteBallSpin", new[] { "System.Single", "System.Single" })
@@ -90,13 +91,25 @@ internal static class Program
                 return 2;
             }
             var layout = new Layout(args.Length == 2 ? args[1] : DefaultGame);
-            var existingHook = File.Exists(layout.State) ? ReadJson<Manifest>(layout.State).Hook : null;
-            var oldPackage = existingHook == LegacyHookDescription ? Legacy : existingHook == PreviousHookDescription ? Previous : null;
+            var existing = File.Exists(layout.State) ? ReadJson<Manifest>(layout.State) : null;
+            // 1.2 and 1.3 share the same hooks. Identify 1.2 by its released payload,
+            // never by the hook list alone; an unknown payload must not be upgraded as 1.2.
+            var oldPackage = existing?.Hook == LegacyHookDescription ? Legacy
+                : existing?.Hook == PreviousHookDescription ? Previous
+                : existing?.Hook == HookDescription && Equal(existing.AdvisorSha256, Version12.AdvisorHash) ? Version12 : null;
             if (oldPackage != null)
             {
+                if (!Equal(existing!.AdvisorSha256, oldPackage.AdvisorHash))
+                    throw new InvalidOperationException("安装清单记录的旧版助手哈希不受支持，已停止。");
                 if (args[0].ToLowerInvariant() == "install") UpgradeOld(layout, oldPackage);
                 else RunOld(args[0].ToLowerInvariant(), layout, oldPackage);
                 return 0;
+            }
+            if (existing?.Hook == HookDescription)
+            {
+                var package = ReadPackage(AppContext.BaseDirectory, "当前");
+                if (!Equal(existing.AdvisorSha256, package.AdvisorSha256))
+                    throw new InvalidOperationException("已安装的助手不是此工具包或已知的 1.2 版本，已停止；请使用原工具包恢复。");
             }
             switch (args[0].ToLowerInvariant())
             {
@@ -130,39 +143,58 @@ internal static class Program
     {
         RequireStopped();
         var payload = Path.Combine(AppContext.BaseDirectory, AdvisorFile);
-        var package = ReadJson<Package>(Path.Combine(AppContext.BaseDirectory, "advisor-package.json"));
-        if (package.SchemaVersion != 1 || !Equal(package.GameAssemblySha256, ExpectedOriginal)) throw new InvalidOperationException("新版校验清单不匹配。");
+        var package = ReadPackage(AppContext.BaseDirectory, "新版");
         RequireHash(payload, package.AdvisorSha256, "新版助手");
         ValidatePayload(payload);
-        RequireHash(Path.Combine(AppContext.BaseDirectory, old.Directory, AdvisorFile), old.AdvisorHash, "旧版回退助手");
-        // Prepare and validate the complete new patch before uninstalling v1.
+        var oldDirectory = Path.Combine(AppContext.BaseDirectory, old.Directory);
+        var oldManifest = ReadPackage(oldDirectory, "旧版回退");
+        if (!Equal(oldManifest.AdvisorSha256, old.AdvisorHash))
+            throw new InvalidOperationException("旧版回退工具包清单与已知版本不同，已停止。");
+        RequireHash(Path.Combine(oldDirectory, "AdvisorSetup.exe"), old.InstallerHash, "旧版恢复工具");
+        RequireHash(Path.Combine(oldDirectory, AdvisorFile), old.AdvisorHash, "旧版回退助手");
+        RequireHash(l.Backup, ExpectedOriginal, "更新前原始备份");
+        RequireHash(l.Advisor, old.AdvisorHash, "更新前旧版助手");
+        // Old installers preserve unrelated state files, but a subsequent install
+        // would refuse that directory. Detect this before uninstalling anything.
+        if (Directory.EnumerateFileSystemEntries(l.StateDirectory).Any(path =>
+            !string.Equals(path, l.State, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(path, l.Backup, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(".friends-advisor 中存在其他文件，请先将这些文件移出再更新；已有助手和所有文件均保留。");
+        // Prepare and validate the complete new patch before uninstalling the old version.
         var stage = StageName(l.Managed, "upgradecheck");
         try { Patch(l.Backup, payload, stage); ValidatePatch(stage); }
         finally { DeleteOwnStage(stage); }
         RunOld("verify", l, old);
-        RunOld("uninstall", l, old);
-        try { Install(l); }
+        try
+        {
+            RunOld("uninstall", l, old);
+            Install(l);
+        }
         catch
         {
             try
             {
-                if (File.Exists(l.State)) Uninstall(l);
+                if (File.Exists(l.State))
+                {
+                    var interrupted = ReadJson<Manifest>(l.State);
+                    if (Equal(interrupted.AdvisorSha256, old.AdvisorHash)) RunOld("uninstall", l, old);
+                    else if (Equal(interrupted.AdvisorSha256, package.AdvisorSha256)) Uninstall(l);
+                    else throw new InvalidOperationException("恢复时发现未知安装清单，拒绝覆盖。");
+                }
                 RunOld("install", l, old);
                 Console.Error.WriteLine("新版更新未完成，已恢复原先可用的旧版助手。");
             }
             catch (Exception restore) { Console.Error.WriteLine("更新恢复未完成：" + restore.Message + "。原工具包保留在 " + old.Directory + " 目录。"); }
             throw;
         }
-        Console.WriteLine("已从旧版更新为 1.2，原版游戏备份仍已校验保存。");
+        Console.WriteLine("已从旧版更新为 1.3，原版游戏备份仍已校验保存。");
     }
 
     private static void Install(Layout l)
     {
         RequireStopped();
         var payload = Path.Combine(AppContext.BaseDirectory, AdvisorFile);
-        var package = ReadJson<Package>(Path.Combine(AppContext.BaseDirectory, "advisor-package.json"));
-        if (package.SchemaVersion != 1 || !Equal(package.GameAssemblySha256, ExpectedOriginal) || !IsHash(package.AdvisorSha256))
-            throw new InvalidOperationException("工具包校验清单不完整或版本不匹配，请重新取得完整工具包。");
+        var package = ReadPackage(AppContext.BaseDirectory, "工具包");
         RequireHash(payload, package.AdvisorSha256, "工具包 FriendsAdvisor.dll");
         ValidatePayload(payload);
         if (File.Exists(l.State))
@@ -487,6 +519,14 @@ internal static class Program
     {
         if (!File.Exists(path)) throw new FileNotFoundException("找不到校验清单：" + path);
         return JsonSerializer.Deserialize<T>(File.ReadAllText(path), JsonOptions) ?? throw new InvalidOperationException("无法读取校验清单。");
+    }
+
+    private static Package ReadPackage(string directory, string label)
+    {
+        var package = ReadJson<Package>(Path.Combine(directory, "advisor-package.json"));
+        if (package.SchemaVersion != 1 || !Equal(package.GameAssemblySha256, ExpectedOriginal) || !IsHash(package.AdvisorSha256))
+            throw new InvalidOperationException(label + "校验清单不完整或版本不匹配，请重新取得完整工具包。");
+        return package;
     }
 
     private static void WriteJsonNew<T>(string path, T data)

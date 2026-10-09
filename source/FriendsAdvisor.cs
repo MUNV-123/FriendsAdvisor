@@ -21,7 +21,7 @@ namespace FriendsAdvisor
                 UnityEngine.Object.DontDestroyOnLoad(go);
                 go.AddComponent<Advisor>();
                 initialized = true;
-                Debug.Log("[FriendsAdvisor] Loaded v1.2; read-only predictions; F8 panel, F7 markers; draggable UI.");
+                Debug.Log("[FriendsAdvisor] Loaded v1.3; read-only predictions; F8 panel, F7 markers; draggable UI.");
             }
             catch (Exception ex) { Debug.LogError("[FriendsAdvisor] Bootstrap: " + ex); }
         }
@@ -207,7 +207,7 @@ namespace FriendsAdvisor
                 if (!selected)
                 {
                     title = "等待靠近机器";
-                    description = "支持：扫雷、龙塔、Crash、CrossyRoad、HiLo、\n百家乐、轮盘赌、幸运转盘、黑杰克。\n走到机器附近并看向它，提示会自动切换。";
+                    description = "支持：扫雷、龙塔、Crash、CrossyRoad、HiLo、\n百家乐、轮盘赌、幸运转盘、黑杰克、\n彩色转盘 MoneyWheel、视频扑克 Poker。\n走到机器附近并看向它，提示会自动切换。";
                     return;
                 }
                 title = selected.GetType().Name + "  ·  " + selected.GameName;
@@ -276,6 +276,7 @@ namespace FriendsAdvisor
             string simple;
             if (RaceWheelPredictions.TryDescribe(game, rng, out simple)) return simple;
             if (BlackjackPredictions.TryDescribe(game, rng, out simple)) return simple;
+            if (PokerPredictions.TryDescribe(game, rng, out simple)) return simple;
             if (SimplePredictions.TryDescribe(game, rng, out simple)) return simple;
             return "此机器暂未支持确定预测。";
         }
@@ -427,7 +428,7 @@ namespace FriendsAdvisor
                 if (!guiLogged && Event.current.type == EventType.Repaint)
                 {
                     guiLogged = true;
-                    Debug.Log("[FriendsAdvisor] GUI ready v1.2; Chinese font, draggable window and overlay rendered.");
+                    Debug.Log("[FriendsAdvisor] GUI ready v1.3; Chinese font, draggable window and overlay rendered.");
                 }
             }
             catch (Exception ex)

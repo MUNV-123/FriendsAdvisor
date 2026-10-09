@@ -24,7 +24,7 @@ namespace FriendsAdvisor
         internal static bool TryDescribe(GameBase game, System.Random rng, out string text)
         {
             text = null;
-            if (!(game is Roulette) && !(game is WheelOfFortune)) return false;
+            if (!IsSupported(game)) return false;
             var wheel = Read.Field<Wheel>(game, "wheel");
             if (!wheel) throw new InvalidOperationException("缺少转盘组件");
             string result, reason;
@@ -47,7 +47,7 @@ namespace FriendsAdvisor
                 TryResult(game, wheel, angle, ballAngle, out result, out reason);
             }
             if (result == null) { text = "转盘落点暂不能确定：" + reason; return true; }
-            text = game is Roulette ? DescribeRoulette(game, result) : DescribeFortune(game, result);
+            text = game is Roulette ? DescribeRoulette(game, result) : game is MoneyWheel ? DescribeMoneyWheel(game, result) : DescribeFortune(game, result);
             return true;
         }
 
@@ -56,7 +56,7 @@ namespace FriendsAdvisor
             var wheel = value as Wheel;
             if (!wheel || !wheel.isServer) return;
             var game = FindGame(wheel);
-            if (!game || !game.isPlaying || !(game is Roulette) && !(game is WheelOfFortune)) return;
+            if (!game || !game.isPlaying || !IsSupported(game)) return;
             if (spins.Count > 256) spins.Clear();
             var spin = new Spin { wheel = new WeakReference(wheel), game = new WeakReference(game), round = Read.Field<int>(game, "gameTurn"), angle = angle };
             if (!(wheel is RouletteWheel)) TryResult(game, wheel, angle, null, out spin.result, out spin.reason);
@@ -78,11 +78,13 @@ namespace FriendsAdvisor
         private static GameBase FindGame(Wheel wheel)
         {
             var game = wheel.GetComponentInParent<GameBase>();
-            if (game && (game is Roulette || game is WheelOfFortune) && ReferenceEquals(Read.Value(game, "wheel"), wheel)) return game;
+            if (game && IsSupported(game) && ReferenceEquals(Read.Value(game, "wheel"), wheel)) return game;
             foreach (var candidate in UnityEngine.Object.FindObjectsByType<GameBase>(FindObjectsSortMode.None))
-                if ((candidate is Roulette || candidate is WheelOfFortune) && ReferenceEquals(Read.Value(candidate, "wheel"), wheel)) return candidate;
+                if (IsSupported(candidate) && ReferenceEquals(Read.Value(candidate, "wheel"), wheel)) return candidate;
             return null;
         }
+
+        private static bool IsSupported(GameBase game) { return game is Roulette || game is WheelOfFortune || game is MoneyWheel; }
 
         private static void Angles(Wheel wheel, System.Random rng, out float angle, out float? ballAngle)
         {
@@ -171,6 +173,39 @@ namespace FriendsAdvisor
             double factor = (double)value * (double)estimatedValue.GetValue(game, null);
             string outcome = factor > 1.0 ? "盈利" : factor == 1.0 ? "回本" : factor > 0.0 ? "未回本" : "未中奖";
             return "本轮目标落点：<b>" + result + "x</b>\n基础返还：" + factor.ToString("0.####", CultureInfo.InvariantCulture) + "x（含本金）→ " + outcome + "。\n玩家增益可能改变实际返还。";
+        }
+
+        private static string DescribeMoneyWheel(GameBase game, string result)
+        {
+            double multiplier;
+            switch (result)
+            {
+                case "Green": multiplier = 2.0; break;
+                case "Blue": multiplier = 3.0; break;
+                case "Red": multiplier = 5.0; break;
+                case "Orange": multiplier = 10.0; break;
+                default: return "本轮目标颜色：" + result + "\n无法识别下注颜色，暂不提供胜负建议。";
+            }
+            // MoneyWheel compares the selected string and applies its own fixed
+            // multiplier before EstimatedValue. Reading this field never calls
+            // SelectBettingOption or any other game method with side effects.
+            string selected = Read.Field<string>(game, "_currentBettingOption");
+            double factor = multiplier * (double)estimatedValue.GetValue(game, null);
+            bool matches = result == selected;
+            string advice = game.isPlaying ? "中奖颜色：" : "应押颜色：";
+            return "<color=#85efae>本轮目标颜色：<b>" + MoneyColor(result) + "</b></color>\n" + advice + MoneyColor(result) + "；基础返还 " + factor.ToString("0.####", CultureInfo.InvariantCulture) + "x（含本金）。\n当前选择：" + MoneyColor(selected) + " → " + (matches ? "中奖（基础返还 " + factor.ToString("0.####", CultureInfo.InvariantCulture) + "x）" : "未中奖（基础返还 0x）") + "。\n玩家增益可能改变实际返还。";
+        }
+
+        private static string MoneyColor(string result)
+        {
+            switch (result)
+            {
+                case "Green": return "绿色";
+                case "Blue": return "蓝色";
+                case "Red": return "红色";
+                case "Orange": return "橙色";
+                default: return string.IsNullOrEmpty(result) ? "未选择" : result;
+            }
         }
 
     }
